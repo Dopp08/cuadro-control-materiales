@@ -185,20 +185,6 @@ def parse_pdf(pdf_bytes):
     RE_QTY      = re.compile(r'^[\d.,]+$')
     RE_DATE     = re.compile(r'^\d+ [a-z]+ \d{4}$')
     RE_UNIT     = re.compile(r'^(m2|m3|ml|m |Ud\.? |ud\.? |UD\.? |PA |Kg |kg )')
-    RE_DOTS     = re.compile(r'\.{4,}')
-
-    def is_chapter_candidate(s):
-        """Detecta si una línea podría ser un nombre de capítulo desconocido."""
-        if not s or len(s) < 5: return False
-        if s in ALL_KNOWN or s in SKIP_SET: return False
-        if RE_QTY.match(s) or RE_DATE.match(s): return False
-        if RE_PART_DOT.match(s) or RE_PART_NUM.match(s) or RE_PART_ALT.match(s): return False
-        if RE_SUB.match(s) or RE_SUBNUM.match(s) or RE_CHAP.match(s): return False
-        if RE_UNIT.match(s) or RE_DOTS.search(s): return False
-        if any(c.isdigit() for c in s): return False
-        letters = [c for c in s if c.isalpha()]
-        if not letters or len(letters) < 4: return False
-        return sum(1 for c in letters if c.isupper()) / len(letters) >= 0.85
 
     def is_code(s):
         if s in ALL_KNOWN or s in SKIP_SET: return False
@@ -235,13 +221,43 @@ def parse_pdf(pdf_bytes):
             chapter_positions.append((i, ls))
             seen_caps.add(ls)
 
-    # Pass 1b: detect unknown chapter candidates for warnings
+    # Pass 1b: detect chapter names from chapter-number codes (precise method)
+    # A line is a real chapter number if followed by a sub-code (dd.dd) within 10 lines
+    RE_SUBCODE = re.compile(r'^\d{2}[\.\d]')
+    RE_DOTS    = re.compile(r'\.{4,}')
+    ALL_KNOWN  = KNOWN_SET | EXCLUDED_CHAPTERS | {
+        'PRESUPUESTO','CÓDIGO','RESUMEN','CANTIDAD','PRECIO','IMPORTE','CAPÍTULO'
+    }
+
+    def is_valid_chapnum(idx):
+        for j in range(idx+1, min(idx+10, len(lines))):
+            ls = lines[j]
+            if RE_SUBCODE.match(ls): return True
+            if ls and not RE_QTY.match(ls) and ls not in {'PRESUPUESTO','CÓDIGO','RESUMEN','CANTIDAD'}:
+                return False
+        return False
+
+    def find_chapname(idx):
+        for j in range(idx+1, min(idx+60, len(lines))):
+            candidate = lines[j]
+            if not candidate: continue
+            if RE_QTY.match(candidate) or RE_DOTS.search(candidate): continue
+            if candidate in {'PRESUPUESTO','CÓDIGO','RESUMEN','CANTIDAD'}: continue
+            if re.match(r'^\d+[\.\d]*[A-Z0-9]*$', candidate): continue
+            if RE_UNIT.match(candidate): continue
+            letters = [c for c in candidate if c.isalpha()]
+            if not letters: continue
+            return candidate
+        return None
+
     unknown_candidates = []
     seen_unknown = set()
-    for ls in lines:
-        if is_chapter_candidate(ls) and ls not in seen_unknown:
-            seen_unknown.add(ls)
-            unknown_candidates.append(ls)
+    for i, ls in enumerate(lines):
+        if re.match(r'^(0[1-9]|[1-9][0-9])$', ls) and is_valid_chapnum(i):
+            name = find_chapname(i)
+            if name and name not in seen_unknown and name not in ALL_KNOWN:
+                seen_unknown.add(name)
+                unknown_candidates.append(name)
 
     def get_chapter(idx):
         cap = ''
@@ -735,6 +751,12 @@ uploaded_file = st.file_uploader(
     "📄 Adjunta el PDF de mediciones de la obra",
     type=["pdf"],
     help="El PDF de presupuesto/mediciones con las partidas agrupadas por capítulo"
+)
+st.caption(
+    "ℹ️ El PDF debe exportarse con **numeración jerárquica de capítulos activada** "
+    "(01, 02, 03...). La mayoría de programas de mediciones como Presto, TCQ o "
+    "Arquímedes permiten activar esta opción al exportar. "
+    "Sin numeración, la detección de capítulos nuevos no estará disponible."
 )
 
 if uploaded_file and obra_name:
