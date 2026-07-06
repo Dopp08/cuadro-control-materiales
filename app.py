@@ -195,6 +195,46 @@ def parse_pdf(pdf_bytes):
                 partidas[ls] = {'desc': desc, 'cap': cap}
     return partidas
 
+# ── SYNTHESIS ─────────────────────────────────────────────────────────────────
+def synthesize(codes, rpc_prod, partidas_dict):
+    unit_re = re.compile(r'^(m2|m3|ml|m\b|Ud\.?\s+|ud\.?\s+|UD\.?\s+|PA\s+|Kg\s+|mes\s+|u\s+|m\s+)', re.I)
+    def clean(d): return unit_re.sub('', d).strip()
+    def toks(s): return re.split(r'[\s/,]+', s.upper())
+
+    descs = [clean(partidas_dict[c]['desc']) for c in codes if c in partidas_dict]
+    if not descs: return normalize(rpc_prod)
+    unique = list(dict.fromkeys(descs))
+    if len(unique) == 1: return normalize(unique[0])
+
+    tok_lists = [toks(d) for d in unique]
+    common = []
+    for words in zip(*tok_lists):
+        if len(set(words)) == 1: common.append(words[0].title())
+        else: break
+
+    if len(common) >= 2:
+        prefix = ' '.join(common).rstrip('.,;')
+        suffixes = []
+        for d in unique:
+            tail = ' '.join(toks(d)[len(common):]).rstrip('.,;').lower()
+            if tail and tail not in suffixes: suffixes.append(tail)
+        if suffixes and len(suffixes) <= 4:
+            return normalize((prefix + ' (' + ' / '.join(suffixes) + ')')[:100])
+        elif suffixes:
+            return normalize((prefix + ' (varios diámetros/tipos)')[:100])
+        return normalize(prefix[:100])
+
+    if len(unique) <= 3:
+        return normalize((' / '.join(d[:30] for d in unique))[:100])
+
+    rpc_clean = re.sub(
+        r'(para aplicaciones en la edificación.*|fabricados en central.*|'
+        r'de materias naturales.*|con áridos densos.*|Productos manufacturados.*)',
+        '', rpc_prod, flags=re.I).strip().rstrip('.,;-')
+    if len(rpc_clean) > 15:
+        return normalize((rpc_clean[:70] + ' (uso en obra)')[:100])
+    return normalize((unique[0][:60] + ' (y ' + str(len(unique)-1) + ' más)')[:100])
+
 # ── BUILD CHAPTER MAPPING ─────────────────────────────────────────────────────
 def build_chapters(all_tp, partidas_dict):
     """Build the chapter→products mapping based on partidas found in the PDF."""
