@@ -109,65 +109,91 @@ def g(all_tp, fragment, sec=None):
 def m(prod, norma, ce='', ddp='', otros=''):
     return {'sec':'—','prod':prod,'norma':norma,'ce':ce,'ddp':ddp,'otros':otros}
 
+KNOWN_CHAPTERS = [
+    'MOVIMIENTO DE TIERRAS','CIMENTACION','SANEAMIENTO ENTERRADO','ESTRUCTURA',
+    'ALBAÑILERIA','FALSOS TECHOS','PAVIMENTOS','REVESTIMIENTOS',
+    'IMPERMEABILIZACIONES','AISLAMIENTOS','CARPINTERIA DE MADERA',
+    'CARPINTERIA EXTERIOR Y CERRAJERIA','FONTANERIA',
+    'ELECTRICIDAD Y TELECOMUNICACIONES','CLIMATIZACION','PCI',
+    'VENTILACION GARAJE Y ZZCC','VENTILACION VIVIENDAS','VIDRIO',
+    'PINTURA','VARIOS','URBANIZACION','SEGURIDAD Y SALUD',
+    'AJARDINAMIENTO','CONTROL DE CALIDAD','GESTION DE RESIDUOS',
+]
+
 # ── PARSE PDF ─────────────────────────────────────────────────────────────────
 def parse_pdf(pdf_bytes):
-    from pdfminer.high_level import extract_text as pdf_extract
-    text = pdf_extract(io.BytesIO(pdf_bytes))
-    lines = text.split('\n')
-    partidas = {}; seen = set(); cap = ''
-    for line in lines:
-        ls = line.strip()
-        if not ls or re.match(r'^\d+ [a-z]+ \d{4}\s+\d+$', ls): continue
-        # Chapter heading: 2-digit code
-        mc = re.match(r'^(0[2-9]|[1-9][0-9])\s{2,}(.+)$', ls)
-        if mc and not re.match(r'^\d{2}\.\d+', ls):
-            cap = mc.group(2).strip(); continue
-        # Partida with dot-notation (01.02.03)
-        mp = re.match(r'^(\d{2}\.\d{2}\.\d+[A-Z0-9]*)\s{2,}(.+?)(?:\s{3,}[\d.,]+\s*)?$', ls)
-        if mp:
-            c, d = mp.group(1), mp.group(2).strip()
-            if c not in seen: seen.add(c); partidas[c] = {'desc': d, 'cap': cap}
-            continue
-        # Alphanumeric codes (E17BCV040 style)
-        ma = re.match(r'^([A-Z0-9]{5,12})\s{2,}(.+?)(?:\s{3,}[\d.,]+\s*)?$', ls)
-        if ma:
-            c, d = ma.group(1), ma.group(2).strip()
-            if c not in seen and not re.match(r'^\d{4}$', c):
-                seen.add(c); partidas[c] = {'desc': d, 'cap': cap}
-    return partidas
+    from pdfminer.high_level import extract_text_to_fp
+    from pdfminer.layout import LAParams
+    laparams = LAParams(line_margin=0.1, word_margin=0.1, char_margin=2.0,
+                        boxes_flow=0.5, detect_vertical=False)
+    buf = io.StringIO()
+    extract_text_to_fp(io.BytesIO(pdf_bytes), buf, laparams=laparams)
+    lines = [l.strip() for l in buf.getvalue().split('\n')]
 
-# ── SYNTHESIS ─────────────────────────────────────────────────────────────────
-def synthesize(codes, rpc_prod, partidas_dict):
-    unit_re = re.compile(r'^(m2|m3|ml|m\b|Ud\.?\s+|ud\.?\s+|UD\.?\s+|PA\s+|Kg\s+|mes\s+|u\s+|m\s+)', re.I)
-    def clean(d): return unit_re.sub('', d).strip()
-    def toks(s): return re.split(r'[\s/,]+', s.upper())
-    descs = [clean(partidas_dict[c]['desc']) for c in codes if c in partidas_dict]
-    if not descs: return normalize(rpc_prod)
-    unique = list(dict.fromkeys(descs))
-    if len(unique) == 1: return normalize(unique[0])
-    tok_lists = [toks(d) for d in unique]
-    common = []
-    for words in zip(*tok_lists):
-        if len(set(words)) == 1: common.append(words[0].title())
-        else: break
-    if len(common) >= 2:
-        prefix = ' '.join(common).rstrip('.,;')
-        suffixes = []
-        for d in unique:
-            tail = ' '.join(toks(d)[len(common):]).rstrip('.,;').lower()
-            if tail and tail not in suffixes: suffixes.append(tail)
-        if suffixes and len(suffixes) <= 4:
-            raw = prefix + ' (' + ' / '.join(suffixes) + ')'
-        elif suffixes: raw = prefix + ' (varios diámetros/tipos)'
-        else: raw = prefix
-        return normalize(raw[:100])
-    if len(unique) <= 3:
-        return normalize(' / '.join(d[:30] for d in unique)[:100])
-    rpc_clean = re.sub(
-        r'(para aplicaciones en la edificación.*|fabricados en central.*|de materias naturales.*|'
-        r'con áridos densos.*|Productos manufacturados.*)', '', rpc_prod, flags=re.I).strip().rstrip('.,;-')
-    if len(rpc_clean) > 15: return normalize((rpc_clean[:70]+' (uso en obra)')[:100])
-    return normalize((unique[0][:60]+' (y '+str(len(unique)-1)+' más)')[:100])
+    KNOWN_SET = set(KNOWN_CHAPTERS)
+    SKIP_SET  = {'PRESUPUESTO','CÓDIGO','RESUMEN','CANTIDAD',
+                 'ALTANA BERROCALES','ALLEGRA BERROCALES'}
+
+    RE_PART_DOT = re.compile(r'^\d{2}\.\d{2}\.\d{2,}[A-Z0-9]*$')
+    RE_PART_NUM = re.compile(r'^\d{6,}[A-Z0-9]*$')
+    RE_PART_ALT = re.compile(r'^[A-Z][A-Z0-9]{5,11}$')
+    RE_SUB      = re.compile(r'^\d{2}\.\d{2}$')
+    RE_SUBNUM   = re.compile(r'^\d{4}$')
+    RE_CHAP     = re.compile(r'^(0[1-9]|[1-9][0-9])$')
+    RE_QTY      = re.compile(r'^[\d.,]+$')
+    RE_DATE     = re.compile(r'^\d+ [a-z]+ \d{4}$')
+    RE_UNIT     = re.compile(r'^(m2|m3|ml|m |Ud\.? |ud\.? |UD\.? |PA |Kg |kg )')
+
+    def is_code(s):
+        if s in KNOWN_SET or s in SKIP_SET: return False
+        return bool(RE_PART_DOT.match(s) or RE_PART_NUM.match(s) or RE_PART_ALT.match(s))
+
+    def skip_in_desc(s):
+        if not s: return True
+        if s in KNOWN_SET or s in SKIP_SET: return True
+        if RE_PART_DOT.match(s) or RE_SUB.match(s) or RE_CHAP.match(s): return True
+        if RE_PART_NUM.match(s) or RE_SUBNUM.match(s): return True
+        if RE_QTY.match(s) or RE_DATE.match(s): return True
+        letters = [c for c in s if c.isalpha()]
+        if not letters: return True
+        has_digits = any(c.isdigit() for c in s)
+        upper_ratio = sum(1 for c in letters if c.isupper()) / len(letters)
+        return upper_ratio >= 0.95 and not has_digits and not RE_UNIT.match(s)
+
+    def find_desc(start):
+        j = start
+        while j < len(lines):
+            ls = lines[j]
+            if skip_in_desc(ls): j += 1; continue
+            desc = RE_UNIT.sub('', ls).strip() if RE_UNIT.match(ls) else ls
+            if desc and len(desc) > 3 and not RE_QTY.match(desc):
+                return desc[:120]
+            j += 1
+        return None
+
+    chapter_positions = []
+    seen_caps = set()
+    for i, ls in enumerate(lines):
+        if ls in KNOWN_SET and ls not in seen_caps:
+            chapter_positions.append((i, ls))
+            seen_caps.add(ls)
+
+    def get_chapter(idx):
+        cap = ''
+        for pos, name in chapter_positions:
+            if pos <= idx + 40: cap = name
+            else: break
+        return cap
+
+    partidas = {}; seen = set()
+    for i, ls in enumerate(lines):
+        if is_code(ls) and ls not in seen:
+            desc = find_desc(i + 1)
+            cap  = get_chapter(i)
+            if desc and cap:
+                seen.add(ls)
+                partidas[ls] = {'desc': desc, 'cap': cap}
+    return partidas
 
 # ── BUILD CHAPTER MAPPING ─────────────────────────────────────────────────────
 def build_chapters(all_tp, partidas_dict):
