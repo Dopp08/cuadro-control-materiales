@@ -109,16 +109,57 @@ def g(all_tp, fragment, sec=None):
 def m(prod, norma, ce='', ddp='', otros=''):
     return {'sec':'—','prod':prod,'norma':norma,'ce':ce,'ddp':ddp,'otros':otros}
 
+# Capítulos que se procesan (todas las variantes de nombre conocidas)
 KNOWN_CHAPTERS = [
-    'MOVIMIENTO DE TIERRAS','CIMENTACION','SANEAMIENTO ENTERRADO','ESTRUCTURA',
-    'ALBAÑILERIA','FALSOS TECHOS','PAVIMENTOS','REVESTIMIENTOS',
-    'IMPERMEABILIZACIONES','AISLAMIENTOS','CARPINTERIA DE MADERA',
-    'CARPINTERIA EXTERIOR Y CERRAJERIA','FONTANERIA',
-    'ELECTRICIDAD Y TELECOMUNICACIONES','CLIMATIZACION','PCI',
-    'VENTILACION GARAJE Y ZZCC','VENTILACION VIVIENDAS','VIDRIO',
-    'PINTURA','VARIOS','URBANIZACION','SEGURIDAD Y SALUD',
-    'AJARDINAMIENTO','CONTROL DE CALIDAD','GESTION DE RESIDUOS',
+    'CIMENTACION', 'CIMENTACIÓN',
+    'SANEAMIENTO ENTERRADO', 'SANEAMIENTO', 'SANEAMIENTO COLGADO',
+    'ESTRUCTURA',
+    'ALBAÑILERIA', 'ALBAÑILERÍA',
+    'FALSOS TECHOS',
+    'PAVIMENTOS',
+    'REVESTIMIENTOS',
+    'IMPERMEABILIZACIONES', 'IMPERMEABILIZACIÓN', 'IMPERMEABILIZACION',
+    'AISLAMIENTOS', 'AISLAMIENTO',
+    'CARPINTERIA DE MADERA', 'CARPINTERÍA DE MADERA',
+    'CARPINTERIA EXTERIOR Y CERRAJERIA',
+    'CARPINTERÍA DE ALUMINIO',
+    'CERRAJERÍA',
+    'FONTANERIA', 'FONTANERÍA',
+    'INSTALACIÓN DE FONTANERIA', 'INSTALACIÓN DE FONTANERÍA',
+    'APARATOS SANITARIOS',
+    'ELECTRICIDAD Y TELECOMUNICACIONES',
+    'ELECTRICIDAD Y ALUMBRADO',
+    'INSTALACIÓN DE ELECTRICIDAD',
+    'TELECOMUNICACIONES',
+    'CLIMATIZACION', 'CLIMATIZACIÓN',
+    'CLIMATIZACIÓN Y ACS',
+    'PCI', 'PROTECCIÓN CONTRA INCENDIOS',
+    'VENTILACION GARAJE Y ZZCC', 'VENTILACION VIVIENDAS',
+    'VENTILACION GARAJES', 'VENTILACIÓN GARAJES',
+    'VENTILACIÓN', 'VENTILACION',
+    'VIDRIO', 'VIDRIOS',
+    'PINTURA',
+    'URBANIZACION', 'URBANIZACIÓN',
+    'INSTALACIONES URBANIZACION',
+    'ENERGIA SOLAR FOTOVOLTAICA', 'ENERGÍA SOLAR',
+    'ASCENSORES',
+    'ALICATADOS Y CHAPADOS',
+    'INSTALACIÓN PISCINA', 'PISCINA',
+    'MOBILIARIO DE COCINA',
 ]
+
+# Capítulos que se excluyen siempre (sin exigencia documental RPC)
+EXCLUDED_CHAPTERS = {
+    'SEGURIDAD Y SALUD',
+    'CONTROL DE CALIDAD',
+    'GESTION DE RESIDUOS',
+    'GESTIÓN DE RESIDUOS',
+    'MOVIMIENTO DE TIERRAS',
+    'AJARDINAMIENTO',
+    'JARDINERÍA',
+    'JARDINERIA',
+    'ACTUACIONES PREVIAS',
+}
 
 # ── PARSE PDF ─────────────────────────────────────────────────────────────────
 def parse_pdf(pdf_bytes):
@@ -130,9 +171,10 @@ def parse_pdf(pdf_bytes):
     extract_text_to_fp(io.BytesIO(pdf_bytes), buf, laparams=laparams)
     lines = [l.strip() for l in buf.getvalue().split('\n')]
 
-    KNOWN_SET = set(KNOWN_CHAPTERS)
-    SKIP_SET  = {'PRESUPUESTO','CÓDIGO','RESUMEN','CANTIDAD',
-                 'ALTANA BERROCALES','ALLEGRA BERROCALES'}
+    KNOWN_SET    = set(KNOWN_CHAPTERS)
+    ALL_KNOWN    = KNOWN_SET | EXCLUDED_CHAPTERS
+    SKIP_SET     = {'PRESUPUESTO','CÓDIGO','RESUMEN','CANTIDAD',
+                    'TOTAL','PRECIO','IMPORTE','CAPÍTULO'}
 
     RE_PART_DOT = re.compile(r'^\d{2}\.\d{2}\.\d{2,}[A-Z0-9]*$')
     RE_PART_NUM = re.compile(r'^\d{6,}[A-Z0-9]*$')
@@ -143,14 +185,28 @@ def parse_pdf(pdf_bytes):
     RE_QTY      = re.compile(r'^[\d.,]+$')
     RE_DATE     = re.compile(r'^\d+ [a-z]+ \d{4}$')
     RE_UNIT     = re.compile(r'^(m2|m3|ml|m |Ud\.? |ud\.? |UD\.? |PA |Kg |kg )')
+    RE_DOTS     = re.compile(r'\.{4,}')
+
+    def is_chapter_candidate(s):
+        """Detecta si una línea podría ser un nombre de capítulo desconocido."""
+        if not s or len(s) < 5: return False
+        if s in ALL_KNOWN or s in SKIP_SET: return False
+        if RE_QTY.match(s) or RE_DATE.match(s): return False
+        if RE_PART_DOT.match(s) or RE_PART_NUM.match(s) or RE_PART_ALT.match(s): return False
+        if RE_SUB.match(s) or RE_SUBNUM.match(s) or RE_CHAP.match(s): return False
+        if RE_UNIT.match(s) or RE_DOTS.search(s): return False
+        if any(c.isdigit() for c in s): return False
+        letters = [c for c in s if c.isalpha()]
+        if not letters or len(letters) < 4: return False
+        return sum(1 for c in letters if c.isupper()) / len(letters) >= 0.85
 
     def is_code(s):
-        if s in KNOWN_SET or s in SKIP_SET: return False
+        if s in ALL_KNOWN or s in SKIP_SET: return False
         return bool(RE_PART_DOT.match(s) or RE_PART_NUM.match(s) or RE_PART_ALT.match(s))
 
     def skip_in_desc(s):
         if not s: return True
-        if s in KNOWN_SET or s in SKIP_SET: return True
+        if s in ALL_KNOWN or s in SKIP_SET: return True
         if RE_PART_DOT.match(s) or RE_SUB.match(s) or RE_CHAP.match(s): return True
         if RE_PART_NUM.match(s) or RE_SUBNUM.match(s): return True
         if RE_QTY.match(s) or RE_DATE.match(s): return True
@@ -171,12 +227,21 @@ def parse_pdf(pdf_bytes):
             j += 1
         return None
 
+    # Pass 1: chapter positions (known only)
     chapter_positions = []
     seen_caps = set()
     for i, ls in enumerate(lines):
         if ls in KNOWN_SET and ls not in seen_caps:
             chapter_positions.append((i, ls))
             seen_caps.add(ls)
+
+    # Pass 1b: detect unknown chapter candidates for warnings
+    unknown_candidates = []
+    seen_unknown = set()
+    for ls in lines:
+        if is_chapter_candidate(ls) and ls not in seen_unknown:
+            seen_unknown.add(ls)
+            unknown_candidates.append(ls)
 
     def get_chapter(idx):
         cap = ''
@@ -185,6 +250,7 @@ def parse_pdf(pdf_bytes):
             else: break
         return cap
 
+    # Pass 2: extract partidas
     partidas = {}; seen = set()
     for i, ls in enumerate(lines):
         if is_code(ls) and ls not in seen:
@@ -193,7 +259,8 @@ def parse_pdf(pdf_bytes):
             if desc and cap:
                 seen.add(ls)
                 partidas[ls] = {'desc': desc, 'cap': cap}
-    return partidas
+
+    return partidas, unknown_candidates
 
 # ── SYNTHESIS ─────────────────────────────────────────────────────────────────
 def synthesize(codes, rpc_prod, partidas_dict):
@@ -679,7 +746,7 @@ if uploaded_file and obra_name:
 
         with st.spinner("Extrayendo partidas del PDF…"):
             pdf_bytes = uploaded_file.read()
-            partidas_dict = parse_pdf(pdf_bytes)
+            partidas_dict, unknown_caps = parse_pdf(pdf_bytes)
 
         if not partidas_dict:
             st.error("No se han podido extraer partidas del PDF. Comprueba que el archivo sea el presupuesto de mediciones correcto.")
@@ -716,7 +783,17 @@ if uploaded_file and obra_name:
             use_container_width=True
         )
 
-        with st.expander("Ver capítulos detectados"):
+        # Aviso de capítulos desconocidos
+        if unknown_caps:
+            with st.expander(f"⚠️ {len(unknown_caps)} posible(s) capítulo(s) no reconocido(s) en el PDF"):
+                st.markdown(
+                    "Las siguientes líneas del PDF podrían ser nombres de capítulo pero **no están en la lista de capítulos conocidos** "
+                    "ni en la lista de exclusión. Si alguno contiene materiales con exigencia documental, añádelo a `KNOWN_CHAPTERS` en `app.py`:"
+                )
+                for cap in unknown_caps:
+                    st.markdown(f"- `{cap}`")
+
+        with st.expander("Ver capítulos procesados"):
             for cap in caps:
                 n = len([c for c,v in partidas_dict.items() if v['cap']==cap])
                 st.write(f"**{cap}** — {n} partidas")
